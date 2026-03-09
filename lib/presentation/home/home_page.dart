@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/datetime_helper.dart';
 import '../../core/di/service_locator.dart';
@@ -20,8 +21,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late final ChatRepository _chatRepo;
   late final AuthRepository _authRepo;
+  RealtimeChannel? _conversationEventsChannel;
   List<Conversation> _conversations = [];
   bool _isLoading = true;
+  bool _showArchivedOnly = false;
 
   @override
   void initState() {
@@ -29,6 +32,13 @@ class _HomePageState extends State<HomePage> {
     _chatRepo = ChatRepositoryImpl(sl.supabase);
     _authRepo = AuthRepositoryImpl(sl.supabase);
     _loadConversations();
+    _subscribeConversationEvents();
+  }
+
+  @override
+  void dispose() {
+    _conversationEventsChannel?.unsubscribe();
+    super.dispose();
   }
 
   Future<void> _loadConversations() async {
@@ -44,7 +54,33 @@ class _HomePageState extends State<HomePage> {
           _isLoading = false;
         });
       }
+      return;
     }
+
+    if (mounted) {
+      setState(() {
+        _conversations = [];
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _subscribeConversationEvents() {
+    _conversationEventsChannel = _chatRepo.subscribeToConversationEvents(() {
+      if (!mounted) return;
+      _loadConversations();
+    });
+  }
+
+  List<Conversation> get _visibleConversations {
+    if (_showArchivedOnly) {
+      return _conversations
+          .where((conversation) => conversation.isArchived)
+          .toList();
+    }
+    return _conversations
+        .where((conversation) => !conversation.isArchived)
+        .toList();
   }
 
   @override
@@ -56,6 +92,15 @@ class _HomePageState extends State<HomePage> {
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              _showArchivedOnly ? Icons.inbox_outlined : Icons.archive_outlined,
+            ),
+            tooltip: _showArchivedOnly ? 'Hộp thư chính' : 'Kho lưu trữ',
+            onPressed: () {
+              setState(() => _showArchivedOnly = !_showArchivedOnly);
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.search),
             onPressed: () async {
@@ -71,7 +116,7 @@ class _HomePageState extends State<HomePage> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _conversations.isEmpty
+          : _visibleConversations.isEmpty
           ? _buildEmptyState()
           : RefreshIndicator(
               onRefresh: _loadConversations,
@@ -80,10 +125,10 @@ class _HomePageState extends State<HomePage> {
                   horizontal: 10,
                   vertical: 8,
                 ),
-                itemCount: _conversations.length,
+                itemCount: _visibleConversations.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 2),
                 itemBuilder: (context, index) {
-                  final conv = _conversations[index];
+                  final conv = _visibleConversations[index];
                   return _buildConversationTile(conv);
                 },
               ),
@@ -113,8 +158,7 @@ class _HomePageState extends State<HomePage> {
         );
         _loadConversations();
       },
-      onLongPressStart: (details) =>
-          _showConversationMenu(details.globalPosition, conv),
+      onLongPress: () => _showConversationMenu(conv),
       leading: _buildAvatar(conv, theme),
       title: Row(
         children: [
@@ -128,6 +172,9 @@ class _HomePageState extends State<HomePage> {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (conv.isPinned)
+            Icon(Icons.push_pin, size: 16, color: theme.colorScheme.primary),
+          if (conv.isPinned) const SizedBox(width: 4),
           Text(
             conv.lastMessageAt != null
                 ? DateTimeHelper.formatChatListTime(conv.lastMessageAt!)
@@ -177,41 +224,151 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _showConversationMenu(
-    Offset globalPosition,
-    Conversation conv,
-  ) async {
-    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
-    final selected = await showMenu<String>(
+  Future<void> _showConversationMenu(Conversation conv) async {
+    final selected = await showModalBottomSheet<String>(
       context: context,
-      position: RelativeRect.fromRect(
-        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 1, 1),
-        Offset.zero & overlay.size,
-      ),
-      items: const [
-        PopupMenuItem<String>(
-          value: 'delete',
-          child: ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.delete_outline),
-            title: Text('Xóa cuộc trò chuyện'),
-          ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (conv.isGroup)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Đổi tên nhóm'),
+                onTap: () => Navigator.pop(context, 'rename'),
+              ),
+            ListTile(
+              leading: Icon(
+                conv.isPinned ? Icons.push_pin_outlined : Icons.push_pin,
+              ),
+              title: Text(
+                conv.isPinned ? 'Bỏ ghim hội thoại' : 'Ghim hội thoại',
+              ),
+              onTap: () => Navigator.pop(context, 'pin'),
+            ),
+            ListTile(
+              leading: Icon(
+                conv.isArchived
+                    ? Icons.unarchive_outlined
+                    : Icons.archive_outlined,
+              ),
+              title: Text(conv.isArchived ? 'Bỏ lưu trữ' : 'Lưu trữ'),
+              onTap: () => Navigator.pop(context, 'archive'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.exit_to_app_outlined),
+              title: const Text('Rời cuộc trò chuyện'),
+              onTap: () => Navigator.pop(context, 'leave'),
+            ),
+          ],
         ),
-      ],
+      ),
     );
 
-    if (selected == 'delete' && mounted) {
-      await _confirmDeleteConversation(conv);
+    if (!mounted) return;
+
+    if (selected == 'rename' && conv.isGroup) {
+      await _renameGroup(conv);
+      return;
+    }
+
+    if (selected == 'pin') {
+      await _togglePin(conv);
+      return;
+    }
+
+    if (selected == 'archive') {
+      await _toggleArchive(conv);
+      return;
+    }
+
+    if (selected == 'leave') {
+      await _confirmLeaveConversation(conv);
     }
   }
 
-  Future<void> _confirmDeleteConversation(Conversation conv) async {
+  Future<void> _togglePin(Conversation conv) async {
+    final userId = _authRepo.currentUserId;
+    if (userId == null) return;
+
+    try {
+      await _chatRepo.setConversationPinned(
+        conversationId: conv.id,
+        userId: userId,
+        isPinned: !conv.isPinned,
+      );
+      await _loadConversations();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể ghim hội thoại: ${e.toString()}')),
+      );
+    }
+  }
+
+  Future<void> _toggleArchive(Conversation conv) async {
+    final userId = _authRepo.currentUserId;
+    if (userId == null) return;
+
+    try {
+      await _chatRepo.setConversationArchived(
+        conversationId: conv.id,
+        userId: userId,
+        isArchived: !conv.isArchived,
+      );
+      await _loadConversations();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể lưu trữ hội thoại: ${e.toString()}')),
+      );
+    }
+  }
+
+  Future<void> _renameGroup(Conversation conv) async {
+    final controller = TextEditingController(text: conv.displayName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Đổi tên nhóm'),
+        content: TextField(
+          controller: controller,
+          maxLength: 50,
+          decoration: const InputDecoration(hintText: 'Tên nhóm mới'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Hủy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Lưu'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName == null || newName.isEmpty) return;
+
+    try {
+      await _chatRepo.updateConversationName(conv.id, newName);
+      await _loadConversations();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Không thể đổi tên nhóm: ${e.toString()}')),
+      );
+    }
+  }
+
+  Future<void> _confirmLeaveConversation(Conversation conv) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Xóa cuộc trò chuyện'),
+        title: const Text('Rời cuộc trò chuyện'),
         content: Text(
-          'Bạn có chắc muốn xóa cuộc trò chuyện với ${conv.displayName}?',
+          'Bạn có chắc muốn rời cuộc trò chuyện với ${conv.displayName}?',
         ),
         actions: [
           TextButton(
@@ -220,7 +377,7 @@ class _HomePageState extends State<HomePage> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Xóa'),
+            child: const Text('Rời'),
           ),
         ],
       ),
@@ -229,13 +386,20 @@ class _HomePageState extends State<HomePage> {
     if (confirmed != true) return;
 
     try {
-      await _chatRepo.deleteConversation(conv.id);
+      final userId = _authRepo.currentUserId;
+      if (userId == null) return;
+      await _chatRepo.leaveConversation(
+        conversationId: conv.id,
+        userId: userId,
+      );
       await _loadConversations();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Không thể xóa: ${e.toString()}')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Không thể rời cuộc trò chuyện: ${e.toString()}'),
+        ),
+      );
     }
   }
 

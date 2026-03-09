@@ -22,6 +22,8 @@ class _SearchPageState extends State<SearchPage> {
   final _searchController = TextEditingController();
   List<UserProfile> _searchResults = [];
   bool _isSearching = false;
+  bool _isGroupMode = false;
+  final Set<String> _selectedUserIds = <String>{};
 
   @override
   void initState() {
@@ -57,9 +59,22 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  void _toggleGroupMode() {
+    setState(() {
+      _isGroupMode = !_isGroupMode;
+      _selectedUserIds.clear();
+    });
+  }
+
   Future<void> _startChat(UserProfile user) async {
     final userId = _authRepo.currentUserId;
     if (userId == null) return;
+    if (user.userId == userId) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Không thể tự chat với chính bạn')),
+      );
+      return;
+    }
 
     // Show loading
     showDialog(
@@ -103,6 +118,84 @@ class _SearchPageState extends State<SearchPage> {
           context,
         ).showSnackBar(SnackBar(content: Text('Lỗi: ${e.toString()}')));
       }
+    }
+  }
+
+  Future<void> _createGroupConversation() async {
+    final currentUserId = _authRepo.currentUserId;
+    if (currentUserId == null) return;
+
+    if (_selectedUserIds.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Hãy chọn ít nhất 2 thành viên để tạo nhóm'),
+        ),
+      );
+      return;
+    }
+
+    final controller = TextEditingController();
+    final groupName = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Tạo nhóm mới'),
+        content: TextField(
+          controller: controller,
+          maxLength: 50,
+          decoration: const InputDecoration(hintText: 'Tên nhóm'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Hủy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Tạo'),
+          ),
+        ],
+      ),
+    );
+
+    if (groupName == null || groupName.isEmpty) return;
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final conversationId = await _chatRepo.createConversation(
+        userId: currentUserId,
+        participantIds: _selectedUserIds.toList(),
+        name: groupName,
+        isGroup: true,
+      );
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      final conversation = Conversation(
+        id: conversationId,
+        name: groupName,
+        isGroup: true,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      Navigator.pop(context);
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatPage(conversation: conversation)),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Tạo nhóm thất bại: ${e.toString()}')),
+      );
     }
   }
 
@@ -158,6 +251,17 @@ class _SearchPageState extends State<SearchPage> {
           ),
         ),
         actions: [
+          IconButton(
+            icon: Icon(_isGroupMode ? Icons.close : Icons.group_add_outlined),
+            tooltip: _isGroupMode ? 'Hủy tạo nhóm' : 'Tạo nhóm',
+            onPressed: _toggleGroupMode,
+          ),
+          if (_isGroupMode)
+            IconButton(
+              icon: const Icon(Icons.check),
+              tooltip: 'Tạo nhóm',
+              onPressed: _createGroupConversation,
+            ),
           if (_searchController.text.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.clear),
@@ -275,8 +379,37 @@ class _SearchPageState extends State<SearchPage> {
                                       ],
                                     ),
                                   )
+                                : _isGroupMode
+                                ? Checkbox(
+                                    value: _selectedUserIds.contains(
+                                      user.userId,
+                                    ),
+                                    onChanged: (value) {
+                                      setState(() {
+                                        if (value == true) {
+                                          _selectedUserIds.add(user.userId);
+                                        } else {
+                                          _selectedUserIds.remove(user.userId);
+                                        }
+                                      });
+                                    },
+                                  )
                                 : null,
-                            onTap: () => _startChat(user),
+                            onTap: isMe
+                                ? null
+                                : _isGroupMode
+                                ? () {
+                                    setState(() {
+                                      if (_selectedUserIds.contains(
+                                        user.userId,
+                                      )) {
+                                        _selectedUserIds.remove(user.userId);
+                                      } else {
+                                        _selectedUserIds.add(user.userId);
+                                      }
+                                    });
+                                  }
+                                : () => _startChat(user),
                           );
                         },
                       )

@@ -13,6 +13,8 @@ class Conversation extends BaseModel {
   final String? otherUserName;
   final String? otherUserAvatar;
   final bool? otherUserOnline;
+  final bool isPinned;
+  final bool isArchived;
 
   Conversation({
     required super.id,
@@ -28,6 +30,8 @@ class Conversation extends BaseModel {
     this.otherUserName,
     this.otherUserAvatar,
     this.otherUserOnline,
+    this.isPinned = false,
+    this.isArchived = false,
   });
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
@@ -50,6 +54,8 @@ class Conversation extends BaseModel {
       otherUserName: json['other_user_name'] as String?,
       otherUserAvatar: json['other_user_avatar'] as String?,
       otherUserOnline: json['other_user_online'] as bool?,
+      isPinned: json['is_pinned'] as bool? ?? false,
+      isArchived: json['is_archived'] as bool? ?? false,
     );
   }
 
@@ -79,6 +85,8 @@ class Conversation extends BaseModel {
     String? otherUserName,
     String? otherUserAvatar,
     bool? otherUserOnline,
+    bool? isPinned,
+    bool? isArchived,
   }) {
     return Conversation(
       id: id ?? this.id,
@@ -94,6 +102,8 @@ class Conversation extends BaseModel {
       otherUserName: otherUserName ?? this.otherUserName,
       otherUserAvatar: otherUserAvatar ?? this.otherUserAvatar,
       otherUserOnline: otherUserOnline ?? this.otherUserOnline,
+      isPinned: isPinned ?? this.isPinned,
+      isArchived: isArchived ?? this.isArchived,
     );
   }
 
